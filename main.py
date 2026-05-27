@@ -582,8 +582,10 @@ async def webhook(request: Request):
         return JSONResponse(make_response(reply))
 
     except Exception as e:
-        logger.error(f"[오류] {str(e)}")
-        return JSONResponse(make_response(f"오류가 발생했습니다: {str(e)}"))
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(tb.encode('ascii', errors='replace').decode('ascii'))
+        return JSONResponse(make_response(f"오류: {type(e).__name__}\n{tb[-200:]}"))
 
 # ─────────────────────────────────────────────────────
 # 헬퍼
