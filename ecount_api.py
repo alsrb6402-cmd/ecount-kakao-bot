@@ -148,12 +148,12 @@ def get_stock(prod_cd="", wh_cd="", base_date=None):
     })
 
 def get_stock_by_warehouse(wh_cd: str, prod_cd="", base_date=None):
-    """창고별 재고현황 조회 (WH_CD 필터로 일반 재고 API 사용)"""
+    """창고별 재고현황 조회 (재고 있는 품목만)"""
     return _api("/OAPI/V2/InventoryBalance/GetListInventoryBalanceStatus", {
         "WH_CD": wh_cd,
         "PROD_CD": prod_cd,
         "BASE_DATE": base_date or datetime.today().strftime("%Y%m%d"),
-        "ZERO_FLAG": "Y"
+        "ZERO_FLAG": "N"   # 재고 0인 품목 제외
     })
 
 # ── 매출 입력 ─────────────────────────────────────────

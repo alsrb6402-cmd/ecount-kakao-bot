@@ -370,19 +370,7 @@ async def webhook(request: Request):
 
                 if intent == "창고별재고":
                     result = get_stock_by_warehouse(wh_cd=pending["wh_cd"])
-                    if not result:
-                        return JSONResponse(make_response("이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."))
-                    items  = ((result or {}).get("Data") or {}).get("Result") or []
-                    pf     = pending.get("prod_nm_filter", "")
-                    if pf:
-                        items = [i for i in items if pf.lower() in str(i.get("PROD_DES","")).lower()]
-                    if items:
-                        lines = [f"📦 {pending['wh_nm']} 재고현황"]
-                        for item in items[:10]:
-                            lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
-                        reply = "\n".join(lines)
-                    else:
-                        reply = f"'{pending['wh_nm']}' 재고가 없습니다."
+                    reply  = _format_wh_stock(result, pending["wh_nm"], pending.get("prod_nm_filter",""))
                     return JSONResponse(make_response(reply))
 
                 pending_confirm[user_id] = pending
@@ -505,19 +493,7 @@ async def webhook(request: Request):
                 elif len(warehouses) == 1:
                     wh     = warehouses[0]
                     result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
-                    if not result:
-                        reply = "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
-                    else:
-                        items = ((result or {}).get("Data") or {}).get("Result") or []
-                        if prod_nm:
-                            items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES","")).lower()]
-                        if items:
-                            lines = [f"📦 {wh['WH_NM']} 재고현황"]
-                            for item in items[:10]:
-                                lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
-                            reply = "\n".join(lines)
-                        else:
-                            reply = f"'{wh['WH_NM']}' 재고가 없습니다."
+                    reply  = _format_wh_stock(result, wh["WH_NM"], prod_nm)
                     logger.info(f"[창고별재고] 사용자={user_name} | 창고={wh['WH_NM']}")
                 else:
                     pending_select[user_id] = {
@@ -641,6 +617,28 @@ def _resolve_warehouse(user_id: str, action: dict) -> dict:
         action["wh_cd"] = "00002"
         action["wh_nm"] = "함평1공장[완제품]"
     return action
+
+def _format_wh_stock(result: dict, wh_nm: str, prod_filter: str = "") -> str:
+    """창고별 재고 결과를 메시지로 포맷"""
+    if not result:
+        return "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
+    items = ((result or {}).get("Data") or {}).get("Result") or []
+    # 재고 0 제외 (ZERO_FLAG=N이어도 혹시 모르니 한번 더)
+    items = [i for i in items if float(i.get("BAL_QTY") or 0) != 0]
+    # 품목명 필터
+    if prod_filter:
+        items = [i for i in items if prod_filter.lower() in str(i.get("PROD_DES","")).lower()
+                                  or prod_filter.lower() in str(i.get("PROD_CD","")).lower()]
+    if not items:
+        return f"'{wh_nm}' 재고가 없습니다."
+    lines = [f"📦 {wh_nm} 재고현황"]
+    for item in items[:20]:
+        nm  = item.get("PROD_DES") or item.get("PROD_CD", "?")
+        qty = float(item.get("BAL_QTY") or 0)
+        lines.append(f"• {nm}: {qty:,.0f}개")
+    if len(items) > 20:
+        lines.append(f"(외 {len(items)-20}개 품목)")
+    return "\n".join(lines)
 
 def _warehouse_select_msg(warehouses: list) -> str:
     lines = ["어떤 창고인가요?"]
