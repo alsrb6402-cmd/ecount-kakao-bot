@@ -146,24 +146,38 @@ def parse_intent(text: str) -> dict:
 }}
 
 예시:
-- "백제로 염화칼슘 100개 출고" → intent:출고, prod_nm:염화칼슘, qty:100, wh_nm:백제
-- "어제 군산 염화칼슘 50개 입고" → intent:입고, io_date:어제, wh_nm:군산, qty:50
-- "5/25 화성에서 눈길제로 30톤백 나갔어" → intent:출고, io_date:5/25, wh_nm:화성
-- "함평에서 백제로 염화칼슘 100개 이동" → intent:재고이동, wh_from:함평, wh_to:백제, prod_nm:염화칼슘, qty:100
-- "군산에서 평택으로 눈길제로 50개 옮겨" → intent:재고이동, wh_from:군산, wh_to:평택
-- "염화칼슘 재고 얼마야?" → intent:재고조회, prod_nm:염화칼슘
-- "백제 창고 재고 보여줘" → intent:창고별재고, wh_nm:백제
-- "오늘 내가 등록한 거 보여줘" → intent:내역조회
-- "이름 바꿔" / "이름 변경" → intent:이름변경
+- "백제로 염화칼슘 100개 출고" -> intent:출고, prod_nm:염화칼슘, qty:100, wh_nm:백제
+- "어제 군산 염화칼슘 50개 입고" -> intent:입고, io_date:어제, wh_nm:군산, qty:50
+- "함평에서 백제로 염화칼슘 100개 이동" -> intent:재고이동, wh_from:함평, wh_to:백제
+- "염화칼슘 재고 얼마야?" -> intent:재고조회, prod_nm:염화칼슘
+- "백제 창고 재고 보여줘" -> intent:창고별재고, wh_nm:백제
+- "오늘 내가 등록한 거 보여줘" -> intent:내역조회
+- "이름 바꿔" -> intent:이름변경
 
 JSON만 반환."""
 
-    msg = ai.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}]
+    # Anthropic SDK 대신 requests로 직접 호출 (한글 인코딩 문제 회피)
+    import requests as req
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    body = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 300,
+        "messages": [{"role": "user", "content": prompt}]
+    }, ensure_ascii=False).encode('utf-8')
+
+    res = req.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json; charset=utf-8",
+            "x-api-key": api_key
+        },
+        data=body,
+        timeout=15
     )
-    return json.loads(msg.content[0].text)
+    res.encoding = 'utf-8'
+    result = res.json()
+    return json.loads(result["content"][0]["text"])
 
 # ─────────────────────────────────────────────────────
 # 시작 이벤트
