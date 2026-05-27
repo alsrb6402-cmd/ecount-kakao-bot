@@ -227,3 +227,9 @@ async def webhook(request: Request):
 @app.get("/")
 def health():
     return {"status": "ok", "service": "대성인더스 ERP 봇"}
+
+@app.get("/my-ip")
+def my_ip():
+    import httpx
+    r = httpx.get("https://api.ipify.org?format=json", timeout=5)
+    return r.json()
