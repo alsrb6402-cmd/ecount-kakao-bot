@@ -339,7 +339,7 @@ async def webhook(request: Request):
 
                 if intent == "재고조회":
                     result = get_stock(prod_cd=pending["prod_cd"])
-                    items  = (result or {}).get("Data", {}).get("Result", [])
+                    items  = (result or {}).get("Data", {}).get("Result") or []
                     reply  = (f"📦 재고현황\n품목: {pending['prod_nm']}\n수량: {float(items[0]['BAL_QTY']):.0f}개"
                               if items else f"'{pending['prod_nm']}' 재고가 없습니다.")
                     return JSONResponse(make_response(reply))
@@ -372,7 +372,7 @@ async def webhook(request: Request):
                     result = get_stock_by_warehouse(wh_cd=pending["wh_cd"])
                     if not result:
                         return JSONResponse(make_response("이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."))
-                    items  = result.get("Data", {}).get("Result", [])
+                    items  = (result or {}).get("Data", {}).get("Result") or []
                     pf     = pending.get("prod_nm_filter", "")
                     if pf:
                         items = [i for i in items if pf.lower() in str(i.get("PROD_DES","")).lower()]
@@ -465,7 +465,7 @@ async def webhook(request: Request):
             prod_nm = parsed.get("prod_nm") or ""
             if not prod_nm:
                 result = get_stock()
-                items  = (result or {}).get("Data", {}).get("Result", [])
+                items  = (result or {}).get("Data", {}).get("Result") or []
                 if items:
                     lines = ["📦 전체 재고현황"]
                     for item in items[:10]:
@@ -479,7 +479,7 @@ async def webhook(request: Request):
                     reply = f"'{prod_nm}' 품목을 찾을 수 없어요."
                 elif len(candidates) == 1:
                     result = get_stock(prod_cd=candidates[0]["PROD_CD"])
-                    items  = (result or {}).get("Data", {}).get("Result", [])
+                    items  = (result or {}).get("Data", {}).get("Result") or []
                     reply  = (f"📦 재고현황\n품목: {candidates[0].get('PROD_DES')}\n수량: {float(items[0]['BAL_QTY']):.0f}개"
                               if items else f"'{candidates[0].get('PROD_DES')}' 재고가 없습니다.")
                 else:
@@ -508,7 +508,7 @@ async def webhook(request: Request):
                     if not result:
                         reply = "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
                     else:
-                        items  = result.get("Data", {}).get("Result", [])
+                        items  = (result or {}).get("Data", {}).get("Result") or []
                         if prod_nm:
                             items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES","")).lower()]
                         if items:
