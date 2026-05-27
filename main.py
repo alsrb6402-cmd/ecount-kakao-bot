@@ -585,7 +585,8 @@ async def webhook(request: Request):
         import traceback
         tb = traceback.format_exc()
         logger.error(tb.encode('ascii', errors='replace').decode('ascii'))
-        return JSONResponse(make_response(f"오류: {type(e).__name__}\n{tb[-200:]}"))
+        # 앞부분 (어느 파일/함수에서 터졌는지)
+        return JSONResponse(make_response(f"오류위치:\n{tb[:400]}"))
 
 # ─────────────────────────────────────────────────────
 # 헬퍼
