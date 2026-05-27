@@ -92,13 +92,40 @@ WAREHOUSE_MAP = {
     "00014": "CJ대한통운[함평]",
 }
 
+# ── 창고 별칭 (짧게 불러도 인식) ─────────────────────
+WAREHOUSE_ALIASES = {
+    # 함평 공장
+    "함평생산":    "00001", "1공장생산":  "00001", "생산":       "00001",
+    "함평완제":    "00002", "1공장완제":  "00002", "함평1":      "00002",
+    "2공장원재료": "00003", "원재료":     "00003", "함평2원":    "00003",
+    "2공장완제":   "00004", "함평2완제":  "00004", "함평2":      "00004",
+    # 물류창고 (지역명으로 검색)
+    "씨레인보우":  "00005", "씨레":       "00005",
+    "평택":        "00006", "우련":       "00006",
+    "군산":        "00007", "cj군산":     "00007",
+    "백제":        "00008", "백제글로벌": "00008",
+    "리움":        "00009", "리움로직스": "00009",
+    "김포":        "00010", "서림김포":   "00010",
+    "화성":        "00011", "서림화성":   "00011",
+    "채움":        "00012", "채움로지스": "00012",
+    "대신":        "00013", "3pl":        "00013",
+    "cj함평":      "00014",
+}
+
 def find_warehouse(keyword: str) -> list:
-    """창고명 키워드로 창고 코드 검색"""
-    keyword_lower = keyword.lower()
+    """창고명 키워드로 창고 코드 검색 (별칭 포함)"""
+    keyword_lower = keyword.lower().replace(" ", "")
+
+    # 1. 별칭 정확 매칭 → 바로 1개 반환
+    if keyword_lower in WAREHOUSE_ALIASES:
+        code = WAREHOUSE_ALIASES[keyword_lower]
+        return [{"WH_CD": code, "WH_NM": WAREHOUSE_MAP[code]}]
+
+    # 2. 창고명 부분 매칭
     matched = [
         {"WH_CD": code, "WH_NM": name}
         for code, name in WAREHOUSE_MAP.items()
-        if keyword_lower in name.lower()
+        if keyword_lower in name.lower().replace(" ", "")
     ]
     return matched
 
