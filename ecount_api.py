@@ -44,9 +44,8 @@ def login(use_test=True):
     data = res.json()
     if str(data.get("Status")) == "200":
         _session_id = data["Data"]["Datas"]["SESSION_ID"]
-        print(f"✅ 로그인 성공 (ZONE={_zone})")
         return _session_id
-    raise Exception(f"로그인 실패: {data}")
+    raise Exception(f"Login failed: {data}")
 
 def _api(path, body=None):
     url = f"{_base_url()}{path}?SESSION_ID={_session_id}"
