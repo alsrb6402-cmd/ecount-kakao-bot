@@ -4,13 +4,19 @@ import anthropic
 import json
 import os
 import logging
+import sys
 from ecount_api import login, get_stock, save_sale, save_purchase, get_products
+
+# ── 한글 인코딩 설정 ──────────────────────────────────
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 # ── 로그 설정 ─────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
