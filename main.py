@@ -20,9 +20,7 @@ app = FastAPI()
 ai = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "여기에API키입력"))
 
 # ── 사용자 이름 저장소 ────────────────────────────────
-# { user_id: "홍길동" }
 user_names: dict = {}
-# 이름 입력 대기 중인 사용자
 waiting_for_name: set = set()
 
 # ── 이카운트 세션 ─────────────────────────────────────
@@ -35,7 +33,6 @@ def ensure_login():
         _session_ready = True
 
 def get_user_id(body: dict) -> str:
-    """카카오 요청에서 고유 사용자 ID 추출"""
     try:
         return body["userRequest"]["user"]["id"]
     except Exception:
@@ -49,22 +46,23 @@ def parse_intent(text: str) -> dict:
 
 반환 형식:
 {{
-  "intent": "매입|매출|재고조회|품목조회|기타",
+  "intent": "입고|출고|재고조회|품목조회|기타",
   "prod_cd": "품목코드 또는 null",
   "prod_nm": "품목명 또는 null",
   "qty": 수량 또는 null,
-  "price": 단가 또는 null,
   "cust_des": "거래처명 또는 null",
   "remarks": "메모 또는 null"
 }}
 
 예시:
-- "오늘 한국식품에서 사과 100개 500원에 매입" → intent: 매입
-- "GS마트에 배 50개 1000원 판매" → intent: 매출
+- "오늘 한국식품에서 사과 100개 입고" → intent: 입고
+- "사과 100개 들어왔어" → intent: 입고
+- "GS마트로 배 50개 출고" → intent: 출고
+- "사과 50개 나갔어" → intent: 출고
 - "사과 재고 얼마야?" → intent: 재고조회
 - "품목 목록 보여줘" → intent: 품목조회
 
-JSON만 반환하고 다른 설명은 하지 마."""
+단가/가격 정보는 무시해도 됨. JSON만 반환하고 다른 설명은 하지 마."""
 
     msg = ai.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -74,7 +72,6 @@ JSON만 반환하고 다른 설명은 하지 마."""
     return json.loads(msg.content[0].text)
 
 def make_response(text: str) -> dict:
-    """카카오 응답 형식"""
     return {
         "version": "2.0",
         "template": {
@@ -89,7 +86,7 @@ async def webhook(request: Request):
         user_id = get_user_id(body)
         user_msg = body["userRequest"]["utterance"]
 
-        # ── 이름 입력 대기 중인 사용자 ──────────────────
+        # ── 이름 입력 대기 중 ────────────────────────────
         if user_id in waiting_for_name:
             name = user_msg.strip()
             user_names[user_id] = name
@@ -99,13 +96,13 @@ async def webhook(request: Request):
                 f"반갑습니다, {name}님! 😊\n\n"
                 "이제 ERP 봇을 사용하실 수 있어요.\n\n"
                 "사용 방법:\n"
-                "• 매입: '거래처에서 품목 수량 단가 매입'\n"
-                "• 매출: '거래처에 품목 수량 단가 판매'\n"
+                "• 입고: '거래처에서 품목 수량 입고'\n"
+                "• 출고: '거래처로 품목 수량 출고'\n"
                 "• 재고조회: '품목 재고 얼마야?'\n"
                 "• 품목조회: '품목 목록 보여줘'"
             ))
 
-        # ── 처음 사용하는 사용자 → 이름 질문 ────────────
+        # ── 신규 사용자 → 이름 질문 ──────────────────────
         if user_id not in user_names:
             waiting_for_name.add(user_id)
             logger.info(f"[신규사용자] ID={user_id[:8]} | 이름 질문 중")
@@ -124,7 +121,61 @@ async def webhook(request: Request):
         parsed = parse_intent(user_msg)
         intent = parsed.get("intent")
 
-        if intent == "재고조회":
+        if intent == "입고":
+            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
+                reply = "품목명을 입력해주세요.\n예) 사과 100개 입고"
+            elif not parsed.get("qty"):
+                reply = "수량을 입력해주세요.\n예) 사과 100개 입고"
+            else:
+                base_remarks = parsed.get("remarks") or ""
+                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
+                result = save_purchase(
+                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
+                    qty=parsed["qty"],
+                    price=0,
+                    cust_des=parsed.get("cust_des") or "",
+                    remarks=remarks_with_user
+                )
+                if str(result.get("Status")) == "200":
+                    reply = (f"✅ 입고 등록 완료!\n"
+                             f"품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n"
+                             f"수량: {parsed['qty']}개\n"
+                             f"담당: {user_name}")
+                    logger.info(f"[입고완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']}")
+                else:
+                    errs = result.get("Errors", [{}])
+                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
+                    reply = f"❌ 오류: {err_msg}"
+                    logger.info(f"[입고실패] 사용자={user_name} | 오류={err_msg}")
+
+        elif intent == "출고":
+            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
+                reply = "품목명을 입력해주세요.\n예) 사과 50개 출고"
+            elif not parsed.get("qty"):
+                reply = "수량을 입력해주세요.\n예) 사과 50개 출고"
+            else:
+                base_remarks = parsed.get("remarks") or ""
+                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
+                result = save_sale(
+                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
+                    qty=parsed["qty"],
+                    price=0,
+                    cust_des=parsed.get("cust_des") or "",
+                    remarks=remarks_with_user
+                )
+                if str(result.get("Status")) == "200":
+                    reply = (f"✅ 출고 등록 완료!\n"
+                             f"품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n"
+                             f"수량: {parsed['qty']}개\n"
+                             f"담당: {user_name}")
+                    logger.info(f"[출고완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']}")
+                else:
+                    errs = result.get("Errors", [{}])
+                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
+                    reply = f"❌ 오류: {err_msg}"
+                    logger.info(f"[출고실패] 사용자={user_name} | 오류={err_msg}")
+
+        elif intent == "재고조회":
             result = get_stock(prod_cd=parsed.get("prod_cd") or "")
             data = result.get("Data", {})
             items = data.get("Result", [])
@@ -136,54 +187,6 @@ async def webhook(request: Request):
             else:
                 reply = "재고 데이터가 없습니다."
             logger.info(f"[재고조회] 사용자={user_name} | 완료")
-
-        elif intent == "매입":
-            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
-                reply = "품목코드 또는 품목명을 입력해주세요.\n예) 사과 100개 500원 매입"
-            elif not parsed.get("qty"):
-                reply = "수량을 입력해주세요."
-            else:
-                base_remarks = parsed.get("remarks") or ""
-                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-                result = save_purchase(
-                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
-                    qty=parsed["qty"],
-                    price=parsed.get("price") or 0,
-                    cust_des=parsed.get("cust_des") or "",
-                    remarks=remarks_with_user
-                )
-                if str(result.get("Status")) == "200":
-                    reply = f"✅ 매입 등록 완료!\n품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n수량: {parsed['qty']}개\n단가: {parsed.get('price', 0):,}원"
-                    logger.info(f"[매입완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']} | 단가={parsed.get('price', 0)}")
-                else:
-                    errs = result.get("Errors", [{}])
-                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
-                    reply = f"❌ 오류: {err_msg}"
-                    logger.info(f"[매입실패] 사용자={user_name} | 오류={err_msg}")
-
-        elif intent == "매출":
-            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
-                reply = "품목코드 또는 품목명을 입력해주세요.\n예) GS마트에 사과 50개 1000원 판매"
-            elif not parsed.get("qty"):
-                reply = "수량을 입력해주세요."
-            else:
-                base_remarks = parsed.get("remarks") or ""
-                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-                result = save_sale(
-                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
-                    qty=parsed["qty"],
-                    price=parsed.get("price") or 0,
-                    cust_des=parsed.get("cust_des") or "",
-                    remarks=remarks_with_user
-                )
-                if str(result.get("Status")) == "200":
-                    reply = f"✅ 매출 등록 완료!\n품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n수량: {parsed['qty']}개\n단가: {parsed.get('price', 0):,}원"
-                    logger.info(f"[매출완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']} | 단가={parsed.get('price', 0)}")
-                else:
-                    errs = result.get("Errors", [{}])
-                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
-                    reply = f"❌ 오류: {err_msg}"
-                    logger.info(f"[매출실패] 사용자={user_name} | 오류={err_msg}")
 
         elif intent == "품목조회":
             result = get_products()
@@ -200,8 +203,8 @@ async def webhook(request: Request):
 
         else:
             reply = ("사용 방법:\n"
-                     "• 매입: '거래처에서 품목 수량 단가 매입'\n"
-                     "• 매출: '거래처에 품목 수량 단가 판매'\n"
+                     "• 입고: '거래처에서 품목 수량 입고'\n"
+                     "• 출고: '거래처로 품목 수량 출고'\n"
                      "• 재고조회: '품목 재고 얼마야?'\n"
                      "• 품목조회: '품목 목록 보여줘'")
             logger.info(f"[기타] 사용자={user_name} | 메시지={user_msg}")
