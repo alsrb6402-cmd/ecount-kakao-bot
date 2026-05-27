@@ -505,6 +505,8 @@ async def webhook(request: Request):
                 elif len(warehouses) == 1:
                     wh     = warehouses[0]
                     result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
+                    # DEBUG: 원본 응답 로그
+                    logger.info(f"[DEBUG창고재고] WH_CD={wh['WH_CD']} | raw={json.dumps(result, ensure_ascii=False)[:500]}")
                     if not result:
                         reply = "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
                     else:
