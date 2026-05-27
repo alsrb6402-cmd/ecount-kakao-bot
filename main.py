@@ -16,7 +16,7 @@ _session_ready = False
 def ensure_login():
     global _session_ready
     if not _session_ready:
-        login(use_test=True)
+        login(use_test=False)
         _session_ready = True
 
 def parse_intent(text: str) -> dict:
