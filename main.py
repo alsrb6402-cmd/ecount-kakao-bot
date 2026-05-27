@@ -179,7 +179,16 @@ JSON만 반환."""
     result = res.json()
     if "content" not in result:
         raise Exception(f"Claude API 오류: {json.dumps(result, ensure_ascii=False)}")
-    return json.loads(result["content"][0]["text"])
+
+    text = result["content"][0]["text"].strip()
+
+    # JSON 블록만 추출 (Claude가 설명 텍스트 붙일 경우 대비)
+    import re
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        text = match.group()
+
+    return json.loads(text)
 
 # ─────────────────────────────────────────────────────
 # 시작 이벤트
