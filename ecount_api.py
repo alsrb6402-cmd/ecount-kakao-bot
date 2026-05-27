@@ -50,6 +50,7 @@ def login(use_test=True):
 def _api(path, body=None):
     url = f"{_base_url()}{path}?SESSION_ID={_session_id}"
     res = requests.post(url, json=body or {}, timeout=10)
+    res.encoding = 'utf-8'  # 이카운트 응답 한글 인코딩 강제 지정
     return res.json()
 
 # ── 품목 조회 ─────────────────────────────────────────
