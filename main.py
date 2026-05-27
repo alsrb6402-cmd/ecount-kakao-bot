@@ -177,6 +177,8 @@ JSON만 반환."""
     )
     res.encoding = 'utf-8'
     result = res.json()
+    if "content" not in result:
+        raise Exception(f"Claude API 오류: {json.dumps(result, ensure_ascii=False)}")
     return json.loads(result["content"][0]["text"])
 
 # ─────────────────────────────────────────────────────
