@@ -505,11 +505,19 @@ async def webhook(request: Request):
                 elif len(warehouses) == 1:
                     wh     = warehouses[0]
                     result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
-                    # DEBUG: 응답 구조를 카카오톡에 직접 출력
-                    status = (result or {}).get("Status", "없음")
-                    data   = (result or {}).get("Data")
-                    data_keys = list(data.keys()) if isinstance(data, dict) else str(type(data))
-                    reply = f"[DEBUG]\nStatus={status}\nData type={type(data).__name__}\nData keys={data_keys}\nraw={json.dumps(result, ensure_ascii=False)[:300]}"
+                    if not result:
+                        reply = "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
+                    else:
+                        items = ((result or {}).get("Data") or {}).get("Result") or []
+                        if prod_nm:
+                            items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES","")).lower()]
+                        if items:
+                            lines = [f"📦 {wh['WH_NM']} 재고현황"]
+                            for item in items[:10]:
+                                lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
+                            reply = "\n".join(lines)
+                        else:
+                            reply = f"'{wh['WH_NM']}' 재고가 없습니다."
                     logger.info(f"[창고별재고] 사용자={user_name} | 창고={wh['WH_NM']}")
                 else:
                     pending_select[user_id] = {
