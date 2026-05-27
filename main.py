@@ -32,6 +32,15 @@ def ensure_login():
         login(use_test=False)
         _session_ready = True
 
+@app.on_event("startup")
+async def startup_event():
+    """서버 시작 시 이카운트 미리 로그인 (카카오 응답 지연 방지)"""
+    try:
+        ensure_login()
+        logger.info("[서버시작] 이카운트 로그인 완료")
+    except Exception as e:
+        logger.error(f"[서버시작] 이카운트 로그인 실패: {e}")
+
 def get_user_id(body: dict) -> str:
     try:
         return body["userRequest"]["user"]["id"]
