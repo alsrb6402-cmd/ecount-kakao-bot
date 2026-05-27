@@ -5,7 +5,7 @@ import json
 import os
 import logging
 import sys
-from ecount_api import login, get_stock, save_sale, save_purchase, get_products, search_products_by_name
+from ecount_api import login, get_stock, get_stock_by_warehouse, find_warehouse, save_sale, save_purchase, get_products, search_products_by_name
 
 # ── 한글 인코딩 설정 ──────────────────────────────────
 sys.stdout.reconfigure(encoding='utf-8')
@@ -65,10 +65,11 @@ def parse_intent(text: str) -> dict:
 
 반환 형식:
 {{
-  "intent": "입고|출고|재고조회|품목조회|기타",
+  "intent": "입고|출고|재고조회|창고별재고|품목조회|기타",
   "prod_cd": "품목코드 또는 null",
   "prod_nm": "품목명 또는 null",
   "qty": 수량 또는 null,
+  "wh_nm": "창고명 또는 null",
   "cust_des": "거래처명 또는 null",
   "remarks": "메모 또는 null"
 }}
@@ -79,6 +80,8 @@ def parse_intent(text: str) -> dict:
 - "GS마트로 배 50개 출고" → intent: 출고
 - "사과 50개 나갔어" → intent: 출고
 - "사과 재고 얼마야?" → intent: 재고조회
+- "백제글로벌 창고 재고 보여줘" → intent: 창고별재고, wh_nm: 백제글로벌
+- "함평 창고 염화칼슘 재고" → intent: 창고별재고, wh_nm: 함평, prod_nm: 염화칼슘
 - "품목 목록 보여줘" → intent: 품목조회
 
 단가/가격 정보는 무시해도 됨. JSON만 반환하고 다른 설명은 하지 마."""
@@ -157,6 +160,19 @@ async def webhook(request: Request):
                                      f"수량: {float(s['BAL_QTY']):.0f}개")
                         else:
                             reply = f"'{prod_nm}' 재고가 없습니다."
+                        return JSONResponse(make_response(reply))
+                    elif pending["intent"] == "창고별재고":
+                        # candidates가 창고 목록인 경우
+                        wh = pending["candidates"][idx]
+                        result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
+                        items = result.get("Data", {}).get("Result", [])
+                        if items:
+                            lines = [f"📦 {wh['WH_NM']} 재고현황"]
+                            for item in items[:10]:
+                                lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
+                            reply = "\n".join(lines)
+                        else:
+                            reply = f"'{wh['WH_NM']}' 재고가 없습니다."
                         return JSONResponse(make_response(reply))
                     elif pending["intent"] == "입고":
                         result = save_purchase(
@@ -294,6 +310,52 @@ async def webhook(request: Request):
                 else:
                     reply = "재고 데이터가 없습니다."
             logger.info(f"[재고조회] 사용자={user_name} | 품목={prod_nm}")
+
+        elif intent == "창고별재고":
+            wh_nm = parsed.get("wh_nm") or ""
+            prod_nm = parsed.get("prod_nm") or ""
+
+            if not wh_nm:
+                reply = "창고명을 입력해주세요.\n예) 백제글로벌 창고 재고 보여줘"
+            else:
+                warehouses = find_warehouse(wh_nm)
+                if len(warehouses) == 0:
+                    reply = f"'{wh_nm}' 창고를 찾을 수 없어요.\n\n📋 창고 목록:\n" + "\n".join(
+                        [f"• {nm}" for nm in ["함평1공장[생산]","함평1공장[완제품]","함평2공장[원재료]",
+                         "함평2공장[완제품]","씨레인보우[인천]","우련평택[평택]",
+                         "CJ대한통운[군산]","백제글로벌[인천]","리움로직스[인천]",
+                         "서림물류[김포]","서림물류[화성]","채움로지스[인천]",
+                         "대신택배[3PL]","CJ대한통운[함평]"]]
+                    )
+                elif len(warehouses) == 1:
+                    wh = warehouses[0]
+                    result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
+                    items = result.get("Data", {}).get("Result", [])
+                    if items:
+                        # 품목명 필터링 (있을 경우)
+                        if prod_nm:
+                            items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES", "")).lower()]
+                        if items:
+                            lines = [f"📦 {wh['WH_NM']} 재고현황"]
+                            for item in items[:10]:
+                                lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
+                            reply = "\n".join(lines)
+                        else:
+                            reply = f"'{wh['WH_NM']}'에 '{prod_nm}' 재고가 없습니다."
+                    else:
+                        reply = f"'{wh['WH_NM']}' 재고가 없습니다."
+                    logger.info(f"[창고별재고] 사용자={user_name} | 창고={wh['WH_NM']}")
+                else:
+                    lines = ["어떤 창고인가요?"]
+                    for i, wh in enumerate(warehouses, 1):
+                        lines.append(f"{i}. {wh['WH_NM']}")
+                    pending_product_select[user_id] = {
+                        "intent": "창고별재고",
+                        "qty": 0,
+                        "prod_nm": prod_nm,
+                        "candidates": warehouses
+                    }
+                    reply = "\n".join(lines)
 
         elif intent == "품목조회":
             result = get_products()

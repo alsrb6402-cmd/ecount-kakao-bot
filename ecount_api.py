@@ -74,12 +74,49 @@ def search_products_by_name(keyword: str) -> list:
     ]
     return matched
 
+# ── 창고 코드 매핑 ────────────────────────────────────
+WAREHOUSE_MAP = {
+    "00001": "함평1공장[생산]",
+    "00002": "함평1공장[완제품]",
+    "00003": "함평2공장[원재료]",
+    "00004": "함평2공장[완제품]",
+    "00005": "씨레인보우[인천]",
+    "00006": "우련평택[평택]",
+    "00007": "CJ대한통운[군산]",
+    "00008": "백제글로벌[인천]",
+    "00009": "리움로직스[인천]",
+    "00010": "서림물류[김포]",
+    "00011": "서림물류[화성]",
+    "00012": "채움로지스[인천]",
+    "00013": "대신택배[3PL]",
+    "00014": "CJ대한통운[함평]",
+}
+
+def find_warehouse(keyword: str) -> list:
+    """창고명 키워드로 창고 코드 검색"""
+    keyword_lower = keyword.lower()
+    matched = [
+        {"WH_CD": code, "WH_NM": name}
+        for code, name in WAREHOUSE_MAP.items()
+        if keyword_lower in name.lower()
+    ]
+    return matched
+
 # ── 재고 조회 ─────────────────────────────────────────
 def get_stock(prod_cd="", wh_cd="", base_date=None):
     """재고현황 조회"""
     return _api("/OAPI/V2/InventoryBalance/GetListInventoryBalanceStatus", {
         "PROD_CD": prod_cd,
         "WH_CD": wh_cd,
+        "BASE_DATE": base_date or datetime.today().strftime("%Y%m%d"),
+        "ZERO_FLAG": "Y"
+    })
+
+def get_stock_by_warehouse(wh_cd: str, prod_cd="", base_date=None):
+    """창고별 재고현황 조회"""
+    return _api("/OAPI/V2/InventoryBalance/GetListInventoryBalanceStatusByLocation", {
+        "WH_CD": wh_cd,
+        "PROD_CD": prod_cd,
         "BASE_DATE": base_date or datetime.today().strftime("%Y%m%d"),
         "ZERO_FLAG": "Y"
     })
