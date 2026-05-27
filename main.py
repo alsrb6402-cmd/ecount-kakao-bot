@@ -7,7 +7,7 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from ecount_api import (login, get_stock, get_stock_by_warehouse, find_warehouse,
-                        save_sale, save_purchase, get_products, search_products_by_name)
+                        save_sale, save_purchase, save_move, get_products, search_products_by_name)
 
 # ── 한글 인코딩 ───────────────────────────────────────
 sys.stdout.reconfigure(encoding='utf-8')
@@ -79,15 +79,25 @@ def make_response(text: str) -> dict:
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": text}}]}}
 
 def confirm_msg(action: dict) -> str:
-    lines = [
-        f"📋 {'입고' if action['intent']=='입고' else '출고'} 등록 확인",
-        f"품목: {action['prod_nm']}",
-        f"수량: {action['qty']}개",
-        f"창고: {action['wh_nm']}",
-        f"날짜: {display_date(action['io_date'])}",
-    ]
-    if action.get("cust_des"):
-        lines.append(f"거래처: {action['cust_des']}")
+    intent = action["intent"]
+    if intent == "재고이동":
+        lines = [
+            f"📋 재고이동 확인",
+            f"품목: {action['prod_nm']}",
+            f"수량: {action['qty']}개",
+            f"이동: {action['wh_from_nm']} → {action['wh_to_nm']}",
+            f"날짜: {display_date(action['io_date'])}",
+        ]
+    else:
+        lines = [
+            f"📋 {'입고' if intent=='입고' else '출고'} 등록 확인",
+            f"품목: {action['prod_nm']}",
+            f"수량: {action['qty']}개",
+            f"창고: {action['wh_nm']}",
+            f"날짜: {display_date(action['io_date'])}",
+        ]
+        if action.get("cust_des"):
+            lines.append(f"거래처: {action['cust_des']}")
     if action.get("remarks"):
         lines.append(f"메모: {action['remarks']}")
     lines.append("\n✅ 등록할까요? (네 / 아니오)")
@@ -116,10 +126,12 @@ def parse_intent(text: str) -> dict:
 
 반환 형식:
 {{
-  "intent": "입고|출고|재고조회|창고별재고|내역조회|이름변경|기타",
+  "intent": "입고|출고|재고이동|재고조회|창고별재고|내역조회|이름변경|기타",
   "prod_nm": "품목명 또는 null",
   "qty": 숫자 또는 null,
   "wh_nm": "창고명 또는 null",
+  "wh_from": "출발창고명 또는 null",
+  "wh_to": "도착창고명 또는 null",
   "io_date": "오늘|어제|그제|날짜(5/25형식) 또는 null",
   "cust_des": "거래처명 또는 null",
   "remarks": "메모 또는 null"
@@ -129,6 +141,8 @@ def parse_intent(text: str) -> dict:
 - "백제로 염화칼슘 100개 출고" → intent:출고, prod_nm:염화칼슘, qty:100, wh_nm:백제
 - "어제 군산 염화칼슘 50개 입고" → intent:입고, io_date:어제, wh_nm:군산, qty:50
 - "5/25 화성에서 눈길제로 30톤백 나갔어" → intent:출고, io_date:5/25, wh_nm:화성
+- "함평에서 백제로 염화칼슘 100개 이동" → intent:재고이동, wh_from:함평, wh_to:백제, prod_nm:염화칼슘, qty:100
+- "군산에서 평택으로 눈길제로 50개 옮겨" → intent:재고이동, wh_from:군산, wh_to:평택
 - "염화칼슘 재고 얼마야?" → intent:재고조회, prod_nm:염화칼슘
 - "백제 창고 재고 보여줘" → intent:창고별재고, wh_nm:백제
 - "오늘 내가 등록한 거 보여줘" → intent:내역조회
@@ -208,30 +222,62 @@ async def webhook(request: Request):
             action = pending_confirm.pop(user_id)
             if user_msg in ("네", "예", "ㅇ", "ㅇㅇ", "응", "yes", "y", "ㅇㅋ", "오케이"):
                 remarks = f"[{user_name}] {action.get('remarks', '')}".strip()
-                if action["intent"] == "입고":
+                intent  = action["intent"]
+
+                if intent == "재고이동":
+                    result = save_move(
+                        prod_cd=action["prod_cd"], qty=action["qty"],
+                        from_wh_cd=action["wh_from_cd"], to_wh_cd=action["wh_to_cd"],
+                        io_date=action["io_date"], remarks=remarks
+                    )
+                    if str(result.get("Status")) == "200":
+                        add_log(user_id, "이동출고", action["prod_nm"], action["qty"], action["wh_from_nm"], action["io_date"])
+                        add_log(user_id, "이동입고", action["prod_nm"], action["qty"], action["wh_to_nm"],   action["io_date"])
+                        reply = (f"✅ 재고이동 완료!\n"
+                                 f"품목: {action['prod_nm']}\n"
+                                 f"수량: {action['qty']}개\n"
+                                 f"이동: {action['wh_from_nm']} → {action['wh_to_nm']}\n"
+                                 f"날짜: {display_date(action['io_date'])}")
+                        logger.info(f"[재고이동완료] 사용자={user_name} | 품목={action['prod_nm']} | {action['wh_from_nm']}→{action['wh_to_nm']} | 수량={action['qty']}")
+                    else:
+                        errs = result.get("Errors", [{}])
+                        reply = f"❌ 오류: {errs[0].get('Message','알 수 없는 오류') if errs else '오류 발생'}"
+
+                elif intent == "입고":
                     result = save_purchase(
                         prod_cd=action["prod_cd"], qty=action["qty"], price=0,
-                        cust_des=action.get("cust_des", ""), io_date=action["io_date"],
-                        remarks=remarks
+                        cust_des=action.get("cust_des", ""), wh_cd=action["wh_cd"],
+                        io_date=action["io_date"], remarks=remarks
                     )
-                else:
+                    if str(result.get("Status")) == "200":
+                        add_log(user_id, "입고", action["prod_nm"], action["qty"], action["wh_nm"], action["io_date"])
+                        reply = (f"✅ 입고 등록 완료!\n"
+                                 f"품목: {action['prod_nm']}\n"
+                                 f"수량: {action['qty']}개\n"
+                                 f"창고: {action['wh_nm']}\n"
+                                 f"날짜: {display_date(action['io_date'])}")
+                        logger.info(f"[입고완료] 사용자={user_name} | 품목={action['prod_nm']} | 수량={action['qty']} | 창고={action['wh_nm']}")
+                    else:
+                        errs = result.get("Errors", [{}])
+                        reply = f"❌ 오류: {errs[0].get('Message','알 수 없는 오류') if errs else '오류 발생'}"
+
+                else:  # 출고
                     result = save_sale(
                         prod_cd=action["prod_cd"], qty=action["qty"], price=0,
                         cust_des=action.get("cust_des", ""), wh_cd=action["wh_cd"],
                         io_date=action["io_date"], remarks=remarks
                     )
-                if str(result.get("Status")) == "200":
-                    add_log(user_id, action["intent"], action["prod_nm"],
-                            action["qty"], action["wh_nm"], action["io_date"])
-                    reply = (f"✅ {action['intent']} 등록 완료!\n"
-                             f"품목: {action['prod_nm']}\n"
-                             f"수량: {action['qty']}개\n"
-                             f"창고: {action['wh_nm']}\n"
-                             f"날짜: {display_date(action['io_date'])}")
-                    logger.info(f"[{action['intent']}완료] 사용자={user_name} | 품목={action['prod_nm']} | 수량={action['qty']} | 창고={action['wh_nm']}")
-                else:
-                    errs = result.get("Errors", [{}])
-                    reply = f"❌ 오류: {errs[0].get('Message','알 수 없는 오류') if errs else '오류 발생'}"
+                    if str(result.get("Status")) == "200":
+                        add_log(user_id, "출고", action["prod_nm"], action["qty"], action["wh_nm"], action["io_date"])
+                        reply = (f"✅ 출고 등록 완료!\n"
+                                 f"품목: {action['prod_nm']}\n"
+                                 f"수량: {action['qty']}개\n"
+                                 f"창고: {action['wh_nm']}\n"
+                                 f"날짜: {display_date(action['io_date'])}")
+                        logger.info(f"[출고완료] 사용자={user_name} | 품목={action['prod_nm']} | 수량={action['qty']} | 창고={action['wh_nm']}")
+                    else:
+                        errs = result.get("Errors", [{}])
+                        reply = f"❌ 오류: {errs[0].get('Message','알 수 없는 오류') if errs else '오류 발생'}"
             else:
                 pending_confirm[user_id] = action
                 reply = "'네' 또는 '아니오'로 답해주세요."
@@ -267,17 +313,26 @@ async def webhook(request: Request):
                               if items else f"'{pending['prod_nm']}' 재고가 없습니다.")
                     return JSONResponse(make_response(reply))
 
+                if intent == "재고이동":
+                    # 출발창고 확인
+                    pending = _resolve_move_warehouse(user_id, pending, "wh_from")
+                    if user_id in pending_select:
+                        return JSONResponse(make_response(f"출발 창고를 선택해주세요:\n" + _warehouse_select_msg(pending_select[user_id]["candidates"])))
+                    # 도착창고 확인
+                    pending = _resolve_move_warehouse(user_id, pending, "wh_to")
+                    if user_id in pending_select:
+                        return JSONResponse(make_response(f"도착 창고를 선택해주세요:\n" + _warehouse_select_msg(pending_select[user_id]["candidates"])))
+                    pending_confirm[user_id] = pending
+                    return JSONResponse(make_response(confirm_msg(pending)))
+
                 # 입고/출고 → 창고 확인
                 pending = _resolve_warehouse(user_id, pending)
-                if pending is None:
-                    return JSONResponse(make_response("내부 오류가 발생했습니다."))
-                if user_id in pending_select:   # 창고 선택 필요
+                if user_id in pending_select:
                     return JSONResponse(make_response(_warehouse_select_msg(pending_select[user_id]["candidates"])))
-                # 바로 확인 단계
                 pending_confirm[user_id] = pending
                 return JSONResponse(make_response(confirm_msg(pending)))
 
-            # 창고 선택 완료
+            # 창고 선택 완료 (입고/출고)
             elif step == "warehouse":
                 pending["wh_cd"] = selected.get("WH_CD", "00002")
                 pending["wh_nm"] = selected.get("WH_NM", "함평1공장[완제품]")
@@ -297,7 +352,24 @@ async def webhook(request: Request):
                         reply = f"'{pending['wh_nm']}' 재고가 없습니다."
                     return JSONResponse(make_response(reply))
 
-                # 입고/출고 → 확인 단계
+                pending_confirm[user_id] = pending
+                return JSONResponse(make_response(confirm_msg(pending)))
+
+            # 재고이동 출발창고 선택
+            elif step == "wh_from":
+                pending["wh_from_cd"] = selected.get("WH_CD", "")
+                pending["wh_from_nm"] = selected.get("WH_NM", "")
+                # 도착창고 확인
+                pending = _resolve_move_warehouse(user_id, pending, "wh_to")
+                if user_id in pending_select:
+                    return JSONResponse(make_response(f"도착 창고를 선택해주세요:\n" + _warehouse_select_msg(pending_select[user_id]["candidates"])))
+                pending_confirm[user_id] = pending
+                return JSONResponse(make_response(confirm_msg(pending)))
+
+            # 재고이동 도착창고 선택
+            elif step == "wh_to":
+                pending["wh_to_cd"] = selected.get("WH_CD", "")
+                pending["wh_to_nm"] = selected.get("WH_NM", "")
                 pending_confirm[user_id] = pending
                 return JSONResponse(make_response(confirm_msg(pending)))
 
@@ -419,6 +491,58 @@ async def webhook(request: Request):
                     }
                     reply = _warehouse_select_msg(warehouses)
 
+        # 재고이동
+        elif intent == "재고이동":
+            prod_nm      = parsed.get("prod_nm")
+            wh_from_input = parsed.get("wh_from") or ""
+            wh_to_input   = parsed.get("wh_to") or ""
+            qty           = parsed.get("qty")
+
+            if not prod_nm:
+                reply = "품목명을 입력해주세요.\n예) 함평에서 백제로 염화칼슘 100개 이동"
+            elif not qty:
+                reply = "수량을 입력해주세요."
+            elif not wh_from_input:
+                reply = "출발 창고를 입력해주세요.\n예) 함평완제에서 백제로 염화칼슘 100개 이동"
+            elif not wh_to_input:
+                reply = "도착 창고를 입력해주세요.\n예) 함평완제에서 백제로 염화칼슘 100개 이동"
+            else:
+                candidates = search_products_by_name(prod_nm)
+                if len(candidates) == 0:
+                    reply = f"'{prod_nm}' 품목을 찾을 수 없어요."
+                elif len(candidates) > 1:
+                    pending_select[user_id] = {
+                        "intent": "재고이동", "qty": qty, "io_date": io_date,
+                        "remarks": parsed.get("remarks") or "",
+                        "wh_from_input": wh_from_input,
+                        "wh_to_input": wh_to_input,
+                        "step": "product", "candidates": candidates[:5]
+                    }
+                    lines = ["어떤 품목인가요?"]
+                    for i, item in enumerate(candidates[:5], 1):
+                        lines.append(f"{i}. {item.get('PROD_DES', item.get('PROD_CD'))}")
+                    reply = "\n".join(lines)
+                else:
+                    action = {
+                        "intent": "재고이동",
+                        "prod_cd": candidates[0]["PROD_CD"],
+                        "prod_nm": candidates[0].get("PROD_DES", candidates[0]["PROD_CD"]),
+                        "qty": qty, "io_date": io_date,
+                        "remarks": parsed.get("remarks") or "",
+                        "wh_from_input": wh_from_input,
+                        "wh_to_input": wh_to_input
+                    }
+                    # 출발창고 확인
+                    action = _resolve_move_warehouse(user_id, action, "wh_from")
+                    if user_id in pending_select:
+                        return JSONResponse(make_response("출발 창고를 선택해주세요:\n" + _warehouse_select_msg(pending_select[user_id]["candidates"])))
+                    # 도착창고 확인
+                    action = _resolve_move_warehouse(user_id, action, "wh_to")
+                    if user_id in pending_select:
+                        return JSONResponse(make_response("도착 창고를 선택해주세요:\n" + _warehouse_select_msg(pending_select[user_id]["candidates"])))
+                    pending_confirm[user_id] = action
+                    reply = confirm_msg(action)
+
         # 내역조회
         elif intent == "내역조회":
             logs      = activity_log.get(user_id, [])
@@ -482,6 +606,30 @@ def _warehouse_select_msg(warehouses: list) -> str:
     for i, wh in enumerate(warehouses, 1):
         lines.append(f"{i}. {wh['WH_NM']}")
     return "\n".join(lines)
+
+def _resolve_move_warehouse(user_id: str, action: dict, which: str) -> dict:
+    """재고이동 출발/도착 창고 결정. 선택 필요 시 pending_select에 저장"""
+    input_key = f"{which}_input"
+    cd_key    = f"{which}_cd"
+    nm_key    = f"{which}_nm"
+    step_name = which  # "wh_from" or "wh_to"
+
+    wh_input = action.get(input_key, "")
+    if not wh_input:
+        return action
+
+    warehouses = find_warehouse(wh_input)
+    if len(warehouses) == 1:
+        action[cd_key] = warehouses[0]["WH_CD"]
+        action[nm_key] = warehouses[0]["WH_NM"]
+    elif len(warehouses) > 1:
+        action["step"]       = step_name
+        action["candidates"] = warehouses
+        pending_select[user_id] = action
+    else:
+        action[cd_key] = "00002"
+        action[nm_key] = "함평1공장[완제품]"
+    return action
 
 # ─────────────────────────────────────────────────────
 # 헬스체크

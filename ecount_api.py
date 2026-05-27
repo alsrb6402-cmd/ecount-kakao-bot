@@ -175,13 +175,8 @@ def save_sale(prod_cd, qty, price, cust_des="", wh_cd=None, io_date=None, remark
     })
 
 # ── 매입 입력 ─────────────────────────────────────────
-def save_purchase(prod_cd, qty, price, cust_des="", io_date=None, remarks=""):
-    """구매(매입) 전표 입력
-    - prod_cd: 품목코드 (필수)
-    - qty: 수량 (필수)
-    - price: 단가
-    - cust_des: 거래처명
-    """
+def save_purchase(prod_cd, qty, price, cust_des="", wh_cd=None, io_date=None, remarks=""):
+    """구매(매입/입고) 전표 입력"""
     supply_amt = int(qty * price)
     return _api("/OAPI/V2/Purchases/SavePurchases", {
         "PurchasesList": {
@@ -189,6 +184,7 @@ def save_purchase(prod_cd, qty, price, cust_des="", io_date=None, remarks=""):
                 "UPLOAD_SER_NO": 1,
                 "IO_DATE": io_date or datetime.today().strftime("%Y%m%d"),
                 "CUST_DES": cust_des,
+                "WH_CD": wh_cd or WH_CD,
                 "PROD_CD": prod_cd,
                 "QTY": qty,
                 "PRICE": price,
@@ -197,6 +193,19 @@ def save_purchase(prod_cd, qty, price, cust_des="", io_date=None, remarks=""):
             }]
         }
     })
+
+def save_move(prod_cd, qty, from_wh_cd, to_wh_cd, io_date=None, remarks=""):
+    """창고 간 재고이동 전표 입력 (출고 → 입고)"""
+    date = io_date or datetime.today().strftime("%Y%m%d")
+    # 출고 (from)
+    out = save_sale(prod_cd=prod_cd, qty=qty, price=0,
+                    wh_cd=from_wh_cd, io_date=date, remarks=remarks)
+    if str(out.get("Status")) != "200":
+        return out  # 출고 실패 시 바로 반환
+    # 입고 (to)
+    inp = save_purchase(prod_cd=prod_cd, qty=qty, price=0,
+                        wh_cd=to_wh_cd, io_date=date, remarks=remarks)
+    return inp
 
 # ── 테스트 실행 ───────────────────────────────────────
 if __name__ == "__main__":
