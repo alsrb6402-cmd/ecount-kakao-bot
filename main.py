@@ -40,6 +40,27 @@ pending_confirm: dict     = {}   # 등록 확인 대기 (네/아니오)
 activity_log: dict        = {}   # user_id → [{date,time,action,prod,qty,wh}]
 
 _session_ready = False
+_prod_name_cache: dict = {}   # PROD_CD → PROD_DES 캐시
+
+def get_prod_nm(prod_cd: str) -> str:
+    """품목코드 → 품목명 (캐시 사용)"""
+    if prod_cd in _prod_name_cache:
+        return _prod_name_cache[prod_cd]
+    return prod_cd  # 캐시 없으면 코드 그대로
+
+def refresh_prod_cache():
+    """품목 목록을 API로 가져와 캐시 갱신"""
+    global _prod_name_cache
+    try:
+        result = get_products()
+        items  = ((result or {}).get("Data") or {}).get("Result") or []
+        _prod_name_cache = {
+            item["PROD_CD"]: item.get("PROD_DES") or item["PROD_CD"]
+            for item in items if item.get("PROD_CD")
+        }
+        logger.info(f"[품목캐시] {len(_prod_name_cache)}개 로드 완료")
+    except Exception as e:
+        logger.error(f"[품목캐시] 로드 실패: {e}")
 
 # ─────────────────────────────────────────────────────
 # 유틸
@@ -196,6 +217,7 @@ async def startup_event():
     try:
         ensure_login()
         logger.info("[서버시작] 이카운트 로그인 완료")
+        refresh_prod_cache()
     except Exception as e:
         logger.error(f"[서버시작] 로그인 실패: {e}")
 
@@ -633,7 +655,8 @@ def _format_wh_stock(result: dict, wh_nm: str, prod_filter: str = "") -> str:
         return f"'{wh_nm}' 재고가 없습니다."
     lines = [f"📦 {wh_nm} 재고현황"]
     for item in items[:20]:
-        nm  = item.get("PROD_DES") or item.get("PROD_CD", "?")
+        prod_cd = item.get("PROD_CD", "?")
+        nm  = item.get("PROD_DES") or get_prod_nm(prod_cd)
         qty = float(item.get("BAL_QTY") or 0)
         lines.append(f"• {nm}: {qty:,.0f}개")
     if len(items) > 20:
