@@ -9,16 +9,24 @@ from datetime import datetime, timedelta
 from ecount_api import (login, get_stock, get_stock_by_warehouse, find_warehouse,
                         save_sale, save_purchase, save_move, get_products, search_products_by_name)
 
-# ── 한글 인코딩 ───────────────────────────────────────
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+# ── 안전한 UTF-8 로깅 핸들러 ─────────────────────────
+class SafeUTF8Handler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.stream.buffer.write((msg + self.terminator).encode('utf-8', errors='replace'))
+            self.stream.buffer.flush()
+        except Exception:
+            try:
+                self.stream.write(self.terminator)
+            except Exception:
+                pass
 
-# ── 로그 설정 ─────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[SafeUTF8Handler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
