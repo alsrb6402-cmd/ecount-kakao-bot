@@ -1,0 +1,134 @@
+import requests
+import json
+from datetime import datetime
+
+# ── 계정 정보 ─────────────────────────────────────────
+COM_CODE = "684252"
+USER_ID  = "곽민규"
+API_KEY  = "323157954dbea4ffd829f178119be1e452"  # 정식 인증키 발급 후 교체
+WH_CD    = "00002"  # 기본 창고 (함평1공장[완제품]) - 필요시 변경
+# 창고 목록:
+# 00001 함평1공장[생산]     00002 함평1공장[완제품]  00003 함평2공장[원재료]
+# 00004 함평2공장[완제품]   00005 씨레인보우[인천]   00006 우련평택[평택]
+# 00007 CJ대한통운[군산]    00008 백제글로벌[인천]   00009 리움로직스[인천]
+# 00010 서림물류[김포]      00011 서림물류[화성]     00012 채움로지스[인천]
+# 00013 대신택배[3PL]       00014 CJ대한통운[함평]
+
+# ── 내부 상태 ─────────────────────────────────────────
+_zone       = None
+_session_id = None
+_use_test   = True  # True: sboapi(테스트), False: oapi(정식)
+
+def _base_url():
+    prefix = "sboapi" if _use_test else "oapi"
+    return f"https://{prefix}{_zone}.ecount.com"
+
+# ── 로그인 ────────────────────────────────────────────
+def login(use_test=True):
+    global _zone, _session_id, _use_test
+    _use_test = use_test
+
+    # ZONE 자동 조회
+    res = requests.post("https://oapi.ecount.com/OAPI/V2/Zone",
+                        json={"COM_CODE": COM_CODE}, timeout=10)
+    _zone = res.json()["Data"]["ZONE"]
+
+    # 로그인
+    prefix = "sboapi" if use_test else "oapi"
+    res = requests.post(
+        f"https://{prefix}{_zone}.ecount.com/OAPI/V2/OAPILogin",
+        json={"COM_CODE": COM_CODE, "USER_ID": USER_ID,
+              "API_CERT_KEY": API_KEY, "LAN_TYPE": "ko-KR", "ZONE": _zone},
+        timeout=10
+    )
+    data = res.json()
+    if str(data.get("Status")) == "200":
+        _session_id = data["Data"]["Datas"]["SESSION_ID"]
+        print(f"✅ 로그인 성공 (ZONE={_zone})")
+        return _session_id
+    raise Exception(f"로그인 실패: {data}")
+
+def _api(path, body=None):
+    url = f"{_base_url()}{path}?SESSION_ID={_session_id}"
+    res = requests.post(url, json=body or {}, timeout=10)
+    return res.json()
+
+# ── 품목 조회 ─────────────────────────────────────────
+def get_products(prod_cd="", prod_type=""):
+    """품목 목록 조회. prod_type: 0=원재료 1=제품 2=반제품 3=상품 4=부재료"""
+    return _api("/OAPI/V2/InventoryBasic/GetBasicProductsList", {
+        "PROD_CD": prod_cd,
+        "PROD_TYPE": prod_type
+    })
+
+# ── 재고 조회 ─────────────────────────────────────────
+def get_stock(prod_cd="", wh_cd="", base_date=None):
+    """재고현황 조회"""
+    return _api("/OAPI/V2/InventoryBalance/GetListInventoryBalanceStatus", {
+        "PROD_CD": prod_cd,
+        "WH_CD": wh_cd,
+        "BASE_DATE": base_date or datetime.today().strftime("%Y%m%d"),
+        "ZERO_FLAG": "Y"
+    })
+
+# ── 매출 입력 ─────────────────────────────────────────
+def save_sale(prod_cd, qty, price, cust_des="", wh_cd=None, io_date=None, remarks=""):
+    """판매(매출) 전표 입력
+    - prod_cd: 품목코드 (필수)
+    - qty: 수량 (필수)
+    - price: 단가
+    - cust_des: 거래처명
+    - wh_cd: 출하창고코드 (필수 - WH_CD 전역변수 사용)
+    """
+    supply_amt = int(qty * price)
+    return _api("/OAPI/V2/Sale/SaveSale", {
+        "SaleList": {
+            "BulkDatas": [{
+                "UPLOAD_SER_NO": 1,
+                "IO_DATE": io_date or datetime.today().strftime("%Y%m%d"),
+                "CUST_DES": cust_des,
+                "WH_CD": wh_cd or WH_CD,
+                "PROD_CD": prod_cd,
+                "QTY": qty,
+                "PRICE": price,
+                "SUPPLY_AMT": supply_amt,
+                "REMARKS": remarks
+            }]
+        }
+    })
+
+# ── 매입 입력 ─────────────────────────────────────────
+def save_purchase(prod_cd, qty, price, cust_des="", io_date=None, remarks=""):
+    """구매(매입) 전표 입력
+    - prod_cd: 품목코드 (필수)
+    - qty: 수량 (필수)
+    - price: 단가
+    - cust_des: 거래처명
+    """
+    supply_amt = int(qty * price)
+    return _api("/OAPI/V2/Purchases/SavePurchases", {
+        "PurchasesList": {
+            "BulkDatas": [{
+                "UPLOAD_SER_NO": 1,
+                "IO_DATE": io_date or datetime.today().strftime("%Y%m%d"),
+                "CUST_DES": cust_des,
+                "PROD_CD": prod_cd,
+                "QTY": qty,
+                "PRICE": price,
+                "SUPPLY_AMT": supply_amt,
+                "REMARKS": remarks
+            }]
+        }
+    })
+
+# ── 테스트 실행 ───────────────────────────────────────
+if __name__ == "__main__":
+    login(use_test=True)
+
+    print("\n=== 품목 목록 조회 ===")
+    r = get_products()
+    print(json.dumps(r, ensure_ascii=False, indent=2)[:600])
+
+    print("\n=== 재고 현황 조회 ===")
+    r = get_stock()
+    print(json.dumps(r, ensure_ascii=False, indent=2)[:600])
