@@ -54,12 +54,25 @@ def _api(path, body=None):
     return res.json()
 
 # ── 품목 조회 ─────────────────────────────────────────
-def get_products(prod_cd="", prod_type=""):
+def get_products(prod_cd="", prod_nm="", prod_type=""):
     """품목 목록 조회. prod_type: 0=원재료 1=제품 2=반제품 3=상품 4=부재료"""
     return _api("/OAPI/V2/InventoryBasic/GetBasicProductsList", {
         "PROD_CD": prod_cd,
+        "PROD_DES": prod_nm,
         "PROD_TYPE": prod_type
     })
+
+def search_products_by_name(keyword: str) -> list:
+    """품목명 키워드로 검색 후 매칭 목록 반환"""
+    result = get_products()
+    items = result.get("Data", {}).get("Result", [])
+    keyword_lower = keyword.lower()
+    matched = [
+        item for item in items
+        if keyword_lower in str(item.get("PROD_DES", "")).lower()
+        or keyword_lower in str(item.get("PROD_CD", "")).lower()
+    ]
+    return matched
 
 # ── 재고 조회 ─────────────────────────────────────────
 def get_stock(prod_cd="", wh_cd="", base_date=None):

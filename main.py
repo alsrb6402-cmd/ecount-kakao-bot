@@ -5,7 +5,7 @@ import json
 import os
 import logging
 import sys
-from ecount_api import login, get_stock, save_sale, save_purchase, get_products
+from ecount_api import login, get_stock, save_sale, save_purchase, get_products, search_products_by_name
 
 # ── 한글 인코딩 설정 ──────────────────────────────────
 sys.stdout.reconfigure(encoding='utf-8')
@@ -28,6 +28,10 @@ ai = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "여기에A
 # ── 사용자 이름 저장소 ────────────────────────────────
 user_names: dict = {}
 waiting_for_name: set = set()
+
+# ── 품목 선택 대기 상태 저장 ──────────────────────────
+# { user_id: { "intent": "입고", "qty": 100, "cust_des": "", "remarks": "", "candidates": [...] } }
+pending_product_select: dict = {}
 
 # ── 이카운트 세션 ─────────────────────────────────────
 _session_ready = False
@@ -128,6 +132,63 @@ async def webhook(request: Request):
                 "(예: 홍길동)"
             ))
 
+        # ── 품목 선택 대기 중 ────────────────────────────
+        if user_id in pending_product_select:
+            pending = pending_product_select.pop(user_id)
+            candidates = pending["candidates"]
+
+            if user_msg.strip().isdigit():
+                idx = int(user_msg.strip()) - 1
+                if 0 <= idx < len(candidates):
+                    selected = candidates[idx]
+                    prod_cd = selected.get("PROD_CD", "")
+                    prod_nm = selected.get("PROD_DES", prod_cd)
+                    user_name = user_names[user_id]
+                    remarks_with_user = f"[{user_name}] {pending.get('remarks', '')}".strip()
+
+                    if pending["intent"] == "재고조회":
+                        result = get_stock(prod_cd=prod_cd)
+                        data = result.get("Data", {})
+                        stock_items = data.get("Result", [])
+                        if stock_items:
+                            s = stock_items[0]
+                            reply = (f"📦 재고현황\n"
+                                     f"품목: {prod_nm}\n"
+                                     f"수량: {float(s['BAL_QTY']):.0f}개")
+                        else:
+                            reply = f"'{prod_nm}' 재고가 없습니다."
+                        return JSONResponse(make_response(reply))
+                    elif pending["intent"] == "입고":
+                        result = save_purchase(
+                            prod_cd=prod_cd, qty=pending["qty"], price=0,
+                            cust_des=pending.get("cust_des", ""), remarks=remarks_with_user
+                        )
+                    else:
+                        result = save_sale(
+                            prod_cd=prod_cd, qty=pending["qty"], price=0,
+                            cust_des=pending.get("cust_des", ""), remarks=remarks_with_user
+                        )
+
+                    if str(result.get("Status")) == "200":
+                        action = "입고" if pending["intent"] == "입고" else "출고"
+                        reply = (f"✅ {action} 등록 완료!\n"
+                                 f"품목: {prod_nm}\n"
+                                 f"수량: {pending['qty']}개\n"
+                                 f"담당: {user_name}")
+                        logger.info(f"[{action}완료] 사용자={user_name} | 품목={prod_nm} | 수량={pending['qty']}")
+                    else:
+                        errs = result.get("Errors", [{}])
+                        err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
+                        reply = f"❌ 오류: {err_msg}"
+                else:
+                    reply = f"1~{len(candidates)} 사이 번호를 입력해주세요."
+                    pending_product_select[user_id] = pending
+            else:
+                reply = "번호를 입력해주세요. (예: 1)"
+                pending_product_select[user_id] = pending
+
+            return JSONResponse(make_response(reply))
+
         # ── 기존 사용자 ──────────────────────────────────
         user_name = user_names[user_id]
         logger.info(f"[요청] 사용자={user_name} | 메시지={user_msg}")
@@ -136,72 +197,103 @@ async def webhook(request: Request):
         parsed = parse_intent(user_msg)
         intent = parsed.get("intent")
 
-        if intent == "입고":
-            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
-                reply = "품목명을 입력해주세요.\n예) 사과 100개 입고"
+        if intent in ("입고", "출고"):
+            prod_nm = parsed.get("prod_nm") or parsed.get("prod_cd")
+            if not prod_nm:
+                reply = "품목명을 입력해주세요.\n예) 염화칼슘 100개 입고"
             elif not parsed.get("qty"):
-                reply = "수량을 입력해주세요.\n예) 사과 100개 입고"
+                reply = "수량을 입력해주세요.\n예) 염화칼슘 100개 입고"
             else:
-                base_remarks = parsed.get("remarks") or ""
-                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-                result = save_purchase(
-                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
-                    qty=parsed["qty"],
-                    price=0,
-                    cust_des=parsed.get("cust_des") or "",
-                    remarks=remarks_with_user
-                )
-                if str(result.get("Status")) == "200":
-                    reply = (f"✅ 입고 등록 완료!\n"
-                             f"품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n"
-                             f"수량: {parsed['qty']}개\n"
-                             f"담당: {user_name}")
-                    logger.info(f"[입고완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']}")
-                else:
-                    errs = result.get("Errors", [{}])
-                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
-                    reply = f"❌ 오류: {err_msg}"
-                    logger.info(f"[입고실패] 사용자={user_name} | 오류={err_msg}")
+                # 품목 검색
+                candidates = search_products_by_name(prod_nm)
 
-        elif intent == "출고":
-            if not parsed.get("prod_cd") and not parsed.get("prod_nm"):
-                reply = "품목명을 입력해주세요.\n예) 사과 50개 출고"
-            elif not parsed.get("qty"):
-                reply = "수량을 입력해주세요.\n예) 사과 50개 출고"
-            else:
-                base_remarks = parsed.get("remarks") or ""
-                remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-                result = save_sale(
-                    prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
-                    qty=parsed["qty"],
-                    price=0,
-                    cust_des=parsed.get("cust_des") or "",
-                    remarks=remarks_with_user
-                )
-                if str(result.get("Status")) == "200":
-                    reply = (f"✅ 출고 등록 완료!\n"
-                             f"품목: {parsed.get('prod_nm') or parsed.get('prod_cd')}\n"
-                             f"수량: {parsed['qty']}개\n"
-                             f"담당: {user_name}")
-                    logger.info(f"[출고완료] 사용자={user_name} | 품목={parsed.get('prod_nm') or parsed.get('prod_cd')} | 수량={parsed['qty']}")
+                if len(candidates) == 0:
+                    reply = f"'{prod_nm}' 품목을 찾을 수 없어요.\n품목명을 다시 확인해주세요."
+
+                elif len(candidates) == 1:
+                    # 1개면 바로 등록
+                    prod_cd = candidates[0].get("PROD_CD", "")
+                    prod_full_nm = candidates[0].get("PROD_DES", prod_cd)
+                    base_remarks = parsed.get("remarks") or ""
+                    remarks_with_user = f"[{user_name}] {base_remarks}".strip()
+
+                    if intent == "입고":
+                        result = save_purchase(prod_cd=prod_cd, qty=parsed["qty"], price=0,
+                                               cust_des=parsed.get("cust_des") or "", remarks=remarks_with_user)
+                    else:
+                        result = save_sale(prod_cd=prod_cd, qty=parsed["qty"], price=0,
+                                           cust_des=parsed.get("cust_des") or "", remarks=remarks_with_user)
+
+                    if str(result.get("Status")) == "200":
+                        reply = (f"✅ {intent} 등록 완료!\n"
+                                 f"품목: {prod_full_nm}\n"
+                                 f"수량: {parsed['qty']}개\n"
+                                 f"담당: {user_name}")
+                        logger.info(f"[{intent}완료] 사용자={user_name} | 품목={prod_full_nm} | 수량={parsed['qty']}")
+                    else:
+                        errs = result.get("Errors", [{}])
+                        err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
+                        reply = f"❌ 오류: {err_msg}"
+
                 else:
-                    errs = result.get("Errors", [{}])
-                    err_msg = errs[0].get('Message', '알 수 없는 오류') if errs else '오류 발생'
-                    reply = f"❌ 오류: {err_msg}"
-                    logger.info(f"[출고실패] 사용자={user_name} | 오류={err_msg}")
+                    # 여러 개면 선택지 제시
+                    pending_product_select[user_id] = {
+                        "intent": intent,
+                        "qty": parsed["qty"],
+                        "cust_des": parsed.get("cust_des") or "",
+                        "remarks": parsed.get("remarks") or "",
+                        "candidates": candidates[:5]
+                    }
+                    lines = [f"어떤 품목인가요?"]
+                    for i, item in enumerate(candidates[:5], 1):
+                        lines.append(f"{i}. {item.get('PROD_DES', item.get('PROD_CD'))}")
+                    reply = "\n".join(lines)
 
         elif intent == "재고조회":
-            result = get_stock(prod_cd=parsed.get("prod_cd") or "")
-            data = result.get("Data", {})
-            items = data.get("Result", [])
-            if items:
-                lines = ["📦 재고현황"]
-                for item in items[:10]:
-                    lines.append(f"• {item['PROD_CD']}: {float(item['BAL_QTY']):.0f}개")
-                reply = "\n".join(lines)
+            prod_nm = parsed.get("prod_nm") or parsed.get("prod_cd") or ""
+
+            if prod_nm:
+                # 품목명으로 검색 후 재고 조회
+                candidates = search_products_by_name(prod_nm)
+                if len(candidates) == 0:
+                    reply = f"'{prod_nm}' 품목을 찾을 수 없어요."
+                elif len(candidates) == 1:
+                    prod_cd = candidates[0].get("PROD_CD", "")
+                    result = get_stock(prod_cd=prod_cd)
+                    data = result.get("Data", {})
+                    items = data.get("Result", [])
+                    if items:
+                        item = items[0]
+                        reply = (f"📦 재고현황\n"
+                                 f"품목: {candidates[0].get('PROD_DES', prod_cd)}\n"
+                                 f"수량: {float(item['BAL_QTY']):.0f}개")
+                    else:
+                        reply = f"'{candidates[0].get('PROD_DES', prod_cd)}' 재고가 없습니다."
+                else:
+                    lines = [f"어떤 품목 재고를 볼까요?"]
+                    for i, item in enumerate(candidates[:5], 1):
+                        lines.append(f"{i}. {item.get('PROD_DES', item.get('PROD_CD'))}")
+                    lines.append("\n번호로 답해주세요.")
+                    # 재고조회용 pending 저장
+                    pending_product_select[user_id] = {
+                        "intent": "재고조회",
+                        "qty": 0,
+                        "candidates": candidates[:5]
+                    }
+                    reply = "\n".join(lines)
             else:
-                reply = "재고 데이터가 없습니다."
-            logger.info(f"[재고조회] 사용자={user_name} | 완료")
+                # 전체 재고 조회
+                result = get_stock()
+                data = result.get("Data", {})
+                items = data.get("Result", [])
+                if items:
+                    lines = ["📦 전체 재고현황"]
+                    for item in items[:10]:
+                        lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
+                    reply = "\n".join(lines)
+                else:
+                    reply = "재고 데이터가 없습니다."
+            logger.info(f"[재고조회] 사용자={user_name} | 품목={prod_nm}")
 
         elif intent == "품목조회":
             result = get_products()
