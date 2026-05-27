@@ -4,7 +4,6 @@ import anthropic
 import json
 import os
 import logging
-from datetime import datetime
 from ecount_api import login, get_stock, save_sale, save_purchase, get_products
 
 # ── 로그 설정 ─────────────────────────────────────────
@@ -20,7 +19,13 @@ app = FastAPI()
 # Anthropic 클라이언트
 ai = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "여기에API키입력"))
 
-# 이카운트 세션
+# ── 사용자 이름 저장소 ────────────────────────────────
+# { user_id: "홍길동" }
+user_names: dict = {}
+# 이름 입력 대기 중인 사용자
+waiting_for_name: set = set()
+
+# ── 이카운트 세션 ─────────────────────────────────────
 _session_ready = False
 
 def ensure_login():
@@ -29,16 +34,12 @@ def ensure_login():
         login(use_test=False)
         _session_ready = True
 
-def get_user_name(body: dict) -> str:
-    """카카오 요청에서 사용자 이름 추출"""
+def get_user_id(body: dict) -> str:
+    """카카오 요청에서 고유 사용자 ID 추출"""
     try:
-        props = body["userRequest"]["user"].get("properties", {})
-        name = props.get("nickname") or props.get("plusfriendUserKey", "")
-        if not name:
-            name = body["userRequest"]["user"].get("id", "알수없음")[:8]
-        return name
+        return body["userRequest"]["user"]["id"]
     except Exception:
-        return "알수없음"
+        return "unknown"
 
 def parse_intent(text: str) -> dict:
     """Claude AI로 자연어 파싱"""
@@ -85,10 +86,38 @@ def make_response(text: str) -> dict:
 async def webhook(request: Request):
     try:
         body = await request.json()
+        user_id = get_user_id(body)
         user_msg = body["userRequest"]["utterance"]
-        user_name = get_user_name(body)
 
-        # Railway 로그 - 요청 수신
+        # ── 이름 입력 대기 중인 사용자 ──────────────────
+        if user_id in waiting_for_name:
+            name = user_msg.strip()
+            user_names[user_id] = name
+            waiting_for_name.discard(user_id)
+            logger.info(f"[이름등록] ID={user_id[:8]} | 이름={name}")
+            return JSONResponse(make_response(
+                f"반갑습니다, {name}님! 😊\n\n"
+                "이제 ERP 봇을 사용하실 수 있어요.\n\n"
+                "사용 방법:\n"
+                "• 매입: '거래처에서 품목 수량 단가 매입'\n"
+                "• 매출: '거래처에 품목 수량 단가 판매'\n"
+                "• 재고조회: '품목 재고 얼마야?'\n"
+                "• 품목조회: '품목 목록 보여줘'"
+            ))
+
+        # ── 처음 사용하는 사용자 → 이름 질문 ────────────
+        if user_id not in user_names:
+            waiting_for_name.add(user_id)
+            logger.info(f"[신규사용자] ID={user_id[:8]} | 이름 질문 중")
+            return JSONResponse(make_response(
+                "안녕하세요! 대성인더스 ERP 봇입니다. 👋\n\n"
+                "처음 이용하시네요!\n"
+                "성함을 입력해주세요.\n"
+                "(예: 홍길동)"
+            ))
+
+        # ── 기존 사용자 ──────────────────────────────────
+        user_name = user_names[user_id]
         logger.info(f"[요청] 사용자={user_name} | 메시지={user_msg}")
 
         ensure_login()
@@ -100,7 +129,7 @@ async def webhook(request: Request):
             data = result.get("Data", {})
             items = data.get("Result", [])
             if items:
-                lines = [f"📦 재고현황"]
+                lines = ["📦 재고현황"]
                 for item in items[:10]:
                     lines.append(f"• {item['PROD_CD']}: {float(item['BAL_QTY']):.0f}개")
                 reply = "\n".join(lines)
@@ -114,10 +143,8 @@ async def webhook(request: Request):
             elif not parsed.get("qty"):
                 reply = "수량을 입력해주세요."
             else:
-                # 비고에 사용자 이름 추가
                 base_remarks = parsed.get("remarks") or ""
                 remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-
                 result = save_purchase(
                     prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
                     qty=parsed["qty"],
@@ -140,10 +167,8 @@ async def webhook(request: Request):
             elif not parsed.get("qty"):
                 reply = "수량을 입력해주세요."
             else:
-                # 비고에 사용자 이름 추가
                 base_remarks = parsed.get("remarks") or ""
                 remarks_with_user = f"[{user_name}] {base_remarks}".strip()
-
                 result = save_sale(
                     prod_cd=parsed.get("prod_cd") or parsed.get("prod_nm", ""),
                     qty=parsed["qty"],
@@ -174,8 +199,7 @@ async def webhook(request: Request):
             logger.info(f"[품목조회] 사용자={user_name} | 완료")
 
         else:
-            reply = ("안녕하세요! 대성인더스 ERP 봇입니다.\n\n"
-                     "사용 방법:\n"
+            reply = ("사용 방법:\n"
                      "• 매입: '거래처에서 품목 수량 단가 매입'\n"
                      "• 매출: '거래처에 품목 수량 단가 판매'\n"
                      "• 재고조회: '품목 재고 얼마야?'\n"
