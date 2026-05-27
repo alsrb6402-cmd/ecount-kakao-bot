@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import anthropic
 import json
 import os
 import logging
@@ -31,7 +30,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-ai = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "여기에API키입력"))
 
 # ── 상태 저장소 ───────────────────────────────────────
 user_names: dict          = {}   # user_id → 이름
@@ -263,7 +261,7 @@ async def webhook(request: Request):
                         from_wh_cd=action["wh_from_cd"], to_wh_cd=action["wh_to_cd"],
                         io_date=action["io_date"], remarks=remarks
                     )
-                    if str(result.get("Status")) == "200":
+                    if result and str(result.get("Status")) == "200":
                         add_log(user_id, "이동출고", action["prod_nm"], action["qty"], action["wh_from_nm"], action["io_date"])
                         add_log(user_id, "이동입고", action["prod_nm"], action["qty"], action["wh_to_nm"],   action["io_date"])
                         reply = (f"✅ 재고이동 완료!\n"
@@ -282,7 +280,7 @@ async def webhook(request: Request):
                         cust_des=action.get("cust_des", ""), wh_cd=action["wh_cd"],
                         io_date=action["io_date"], remarks=remarks
                     )
-                    if str(result.get("Status")) == "200":
+                    if result and str(result.get("Status")) == "200":
                         add_log(user_id, "입고", action["prod_nm"], action["qty"], action["wh_nm"], action["io_date"])
                         reply = (f"✅ 입고 등록 완료!\n"
                                  f"품목: {action['prod_nm']}\n"
@@ -300,7 +298,7 @@ async def webhook(request: Request):
                         cust_des=action.get("cust_des", ""), wh_cd=action["wh_cd"],
                         io_date=action["io_date"], remarks=remarks
                     )
-                    if str(result.get("Status")) == "200":
+                    if result and str(result.get("Status")) == "200":
                         add_log(user_id, "출고", action["prod_nm"], action["qty"], action["wh_nm"], action["io_date"])
                         reply = (f"✅ 출고 등록 완료!\n"
                                  f"품목: {action['prod_nm']}\n"
@@ -341,7 +339,7 @@ async def webhook(request: Request):
 
                 if intent == "재고조회":
                     result = get_stock(prod_cd=pending["prod_cd"])
-                    items  = result.get("Data", {}).get("Result", [])
+                    items  = (result or {}).get("Data", {}).get("Result", [])
                     reply  = (f"📦 재고현황\n품목: {pending['prod_nm']}\n수량: {float(items[0]['BAL_QTY']):.0f}개"
                               if items else f"'{pending['prod_nm']}' 재고가 없습니다.")
                     return JSONResponse(make_response(reply))
@@ -372,6 +370,8 @@ async def webhook(request: Request):
 
                 if intent == "창고별재고":
                     result = get_stock_by_warehouse(wh_cd=pending["wh_cd"])
+                    if not result:
+                        return JSONResponse(make_response("이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."))
                     items  = result.get("Data", {}).get("Result", [])
                     pf     = pending.get("prod_nm_filter", "")
                     if pf:
@@ -465,7 +465,7 @@ async def webhook(request: Request):
             prod_nm = parsed.get("prod_nm") or ""
             if not prod_nm:
                 result = get_stock()
-                items  = result.get("Data", {}).get("Result", [])
+                items  = (result or {}).get("Data", {}).get("Result", [])
                 if items:
                     lines = ["📦 전체 재고현황"]
                     for item in items[:10]:
@@ -479,7 +479,7 @@ async def webhook(request: Request):
                     reply = f"'{prod_nm}' 품목을 찾을 수 없어요."
                 elif len(candidates) == 1:
                     result = get_stock(prod_cd=candidates[0]["PROD_CD"])
-                    items  = result.get("Data", {}).get("Result", [])
+                    items  = (result or {}).get("Data", {}).get("Result", [])
                     reply  = (f"📦 재고현황\n품목: {candidates[0].get('PROD_DES')}\n수량: {float(items[0]['BAL_QTY']):.0f}개"
                               if items else f"'{candidates[0].get('PROD_DES')}' 재고가 없습니다.")
                 else:
@@ -505,16 +505,19 @@ async def webhook(request: Request):
                 elif len(warehouses) == 1:
                     wh     = warehouses[0]
                     result = get_stock_by_warehouse(wh_cd=wh["WH_CD"])
-                    items  = result.get("Data", {}).get("Result", [])
-                    if prod_nm:
-                        items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES","")).lower()]
-                    if items:
-                        lines = [f"📦 {wh['WH_NM']} 재고현황"]
-                        for item in items[:10]:
-                            lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
-                        reply = "\n".join(lines)
+                    if not result:
+                        reply = "이카운트 연결 오류입니다. 잠시 후 다시 시도해주세요."
                     else:
-                        reply = f"'{wh['WH_NM']}' 재고가 없습니다."
+                        items  = result.get("Data", {}).get("Result", [])
+                        if prod_nm:
+                            items = [i for i in items if prod_nm.lower() in str(i.get("PROD_DES","")).lower()]
+                        if items:
+                            lines = [f"📦 {wh['WH_NM']} 재고현황"]
+                            for item in items[:10]:
+                                lines.append(f"• {item.get('PROD_DES', item['PROD_CD'])}: {float(item['BAL_QTY']):.0f}개")
+                            reply = "\n".join(lines)
+                        else:
+                            reply = f"'{wh['WH_NM']}' 재고가 없습니다."
                     logger.info(f"[창고별재고] 사용자={user_name} | 창고={wh['WH_NM']}")
                 else:
                     pending_select[user_id] = {
@@ -609,9 +612,11 @@ async def webhook(request: Request):
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        logger.error(tb.encode('ascii', errors='replace').decode('ascii'))
-        # 앞부분 (어느 파일/함수에서 터졌는지)
-        return JSONResponse(make_response(f"오류위치:\n{tb[:400]}"))
+        logger.error(tb.encode('utf-8', errors='replace').decode('utf-8'))
+        # 사용자에게는 간단한 오류 메시지 (줄 번호만 표시)
+        lines = [l for l in tb.strip().splitlines() if 'File' in l or str(type(e).__name__) in l]
+        short = "\n".join(lines[-3:]) if lines else str(e)
+        return JSONResponse(make_response(f"⚠️ 오류가 발생했습니다.\n{short[:200]}"))
 
 # ─────────────────────────────────────────────────────
 # 헬퍼

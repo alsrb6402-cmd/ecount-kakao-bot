@@ -47,11 +47,19 @@ def login(use_test=True):
         return _session_id
     raise Exception(f"Login failed: {data}")
 
-def _api(path, body=None):
+def _api(path, body=None, _retry=True):
     url = f"{_base_url()}{path}?SESSION_ID={_session_id}"
     res = requests.post(url, json=body or {}, timeout=10)
     res.encoding = 'utf-8'  # 이카운트 응답 한글 인코딩 강제 지정
-    return res.json()
+    data = res.json()
+    if data is None:
+        return {}
+    # 세션 만료(999) 또는 인증 오류 → 자동 재로그인 후 1회 재시도
+    status = str(data.get("Status", ""))
+    if _retry and status in ("999", "401", "403"):
+        login(use_test=_use_test)
+        return _api(path, body, _retry=False)
+    return data
 
 # ── 품목 조회 ─────────────────────────────────────────
 def get_products(prod_cd="", prod_nm="", prod_type=""):
